@@ -27,6 +27,7 @@ public class RailPoint : NetworkBehaviour
         public DirectionType targetDir;
         public float prevDistance;
         public bool isRotating;
+        public bool isWaiting;
     }
 
 
@@ -68,35 +69,21 @@ public class RailPoint : NetworkBehaviour
             {
                 Player player = hit.collider.GetComponent<Player>();
 
-                Debug.Log($"Ray Hit: {hit.collider.name}");
-
-
                 if (player != null && player.IsReady)
                 {
                     AddPlayer(player, type);
                 }
-
-                // 一旦waitならスキップ
-                //if (m_DirectionType == RailPointType.WAIT) continue;
-
-                //if(m_DirectionType == RailPointType.NORMAL)
-                //{
-                //    if (player != null && player.IsReady)
-                //    {
-                //        AddPlayer(player, type);
-                //    }
-                //}
             }
         }
     }
 
     private void UpdatePlayers()
-    { 
-        for(int i = m_PlayerDatas.Count - 1; i >= 0; i--)
+    {
+        for (int i = m_PlayerDatas.Count - 1; i >= 0; i--)
         {
             RailPlayerData data = m_PlayerDatas[i];
 
-            if(data.player == null)
+            if (data.player == null)
             {
                 m_PlayerDatas.RemoveAt(i);
                 continue;
@@ -104,43 +91,11 @@ public class RailPoint : NetworkBehaviour
 
             float currentDis = Vector3.Distance(
                 data.player.transform.position,
-                this.transform.position);
+                this.transform.position
+            );
 
-            if(!data.isRotating && IsGettingCloset(currentDis))
-            {
-                if (m_DirectionType == RailPointType.NORMAL)
-                {
-                    data.isRotating = true;
-                }
-                else if (m_DirectionType == RailPointType.WAIT)
-                {
-                    UpdateWaitPlayer(ref data);
-                }
-            }
-
-            if (!data.isRotating)
-            {
-                if (IsApproaching(currentDis, data.prevDistance))
-                {
-                    // 接近中の処理
-
-                    // 接近中で、ターニングなら、来た方角を回転値に設定
-                    //if (data.player.IsTurning())
-                    //{
-                    //    data.player.SetTargetRotation(GetTargetRotation(data.type));
-                    //    return;
-                    //}
-
-                }
-                else if (IsMovingAway(currentDis, data.prevDistance))
-                {
-                    // 離れているので削除
-                    data.player.SetStop(false);
-                    m_PlayerDatas.RemoveAt(i);
-                    continue;
-                }
-            }
-            else
+            // 回転中
+            if (data.isRotating)
             {
                 UpdateRotation(data.player, data.targetDir);
 
@@ -151,9 +106,65 @@ public class RailPoint : NetworkBehaviour
                     continue;
                 }
             }
+            // 入力待ち中
+            else if (data.isWaiting)
+            {
+                UpdateWaitPlayer(ref data);
+            }
+            // 回転開始判定
+            else if (IsGettingCloset(currentDis))
+            {
+                if (m_DirectionType == RailPointType.NORMAL)
+                {
+                    data.isRotating = true;
+                }
+                else if (m_DirectionType == RailPointType.WAIT)
+                {
+                    // まず入力方向を確認
+                    if (UpdateWaitPlayer(ref data))
+                    {
 
-            data.prevDistance = currentDis;
-            m_PlayerDatas[i] = data;
+                    }
+                    else
+                    {
+                        // 入力がなければ、入ってきた方向の反対側を確認
+                        Vector3 input = data.player.GetInput();
+
+                        if (input.sqrMagnitude < 0.01f)
+                        {
+                            DirectionType opposite = GetOppositeDirection(data.type);
+
+                            if (IsValidDirection(opposite))
+                            {
+                                // 反対側にレールがあれば直進
+                                data.targetDir = opposite;
+                                data.isRotating = true;
+                            }
+                            else
+                            {
+                                // 進める方向がないので停止
+                                data.player.SetStop(true);
+                                data.isWaiting = true;
+                            }
+                        }
+                        else
+                        {
+                            // 入力はあるが、入力方向にレールがない
+                            data.player.SetStop(true);
+                            data.isWaiting = true;
+                        }
+                    }
+                }
+                else if (IsMovingAway(currentDis, data.prevDistance))
+                {
+                    data.player.SetStop(false);
+                    m_PlayerDatas.RemoveAt(i);
+                    continue;
+                }
+
+                data.prevDistance = currentDis;
+                m_PlayerDatas[i] = data;
+            }
         }
     }
 
@@ -189,7 +200,8 @@ public class RailPoint : NetworkBehaviour
             type = type,
             targetDir = GetNextDirection(type),
             prevDistance = distance,
-            isRotating = false
+            isRotating = false,
+            isWaiting = false
         };
 
         m_PlayerDatas.Add(newData);
@@ -289,17 +301,19 @@ public class RailPoint : NetworkBehaviour
             return false;
         }
 
-        if (Mathf.Abs(input.x) > Mathf.Abs(input.z))
-        {
-            direction = input.x > 0
-                ? DirectionType.EAST
-                : DirectionType.WEST;
-        }
-        else
+        // 前後の入力
+        if (Mathf.Abs(input.z) > Mathf.Abs(input.x))
         {
             direction = input.z > 0
                 ? DirectionType.NORTH
                 : DirectionType.SOUTH;
+        }
+        // 左右の入力
+        else
+        {
+            direction = input.x > 0
+                ? DirectionType.EAST
+                : DirectionType.WEST;
         }
 
         return true;
@@ -312,20 +326,72 @@ public class RailPoint : NetworkBehaviour
 
     private bool UpdateWaitPlayer(ref RailPlayerData data)
     {
-        if (!GetInputDirection(data.player, out DirectionType direction))
+        Vector3 input = data.player.GetInput();
+
+        DirectionType direction;
+
+        // 前後左右の入力値を判定
+        if (Mathf.Abs(input.x) > Mathf.Abs(input.z))
         {
-            return false;
+            if (input.x > 0.1f)
+            {
+                direction = DirectionType.EAST;
+            }
+            else if (input.x < -0.1f)
+            {
+                direction = DirectionType.WEST;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        else
+        {
+            if (input.z > 0.1f)
+            {
+                direction = DirectionType.NORTH;
+            }
+            else if (input.z < -0.1f)
+            {
+                direction = DirectionType.SOUTH;
+            }
+            else
+            {
+                return false;
+            }
         }
 
-        // 接続されているレールの方向か確認
+        // 接続されている方向か確認
         if (!IsValidDirection(direction))
         {
             return false;
         }
 
         data.targetDir = direction;
+        data.isWaiting = false;
         data.isRotating = true;
 
         return true;
+    }
+
+    private DirectionType GetOppositeDirection(DirectionType direction)
+    {
+        switch (direction)
+        {
+            case DirectionType.NORTH:
+                return DirectionType.SOUTH;
+
+            case DirectionType.SOUTH:
+                return DirectionType.NORTH;
+
+            case DirectionType.EAST:
+                return DirectionType.WEST;
+
+            case DirectionType.WEST:
+                return DirectionType.EAST;
+        }
+
+        return direction;
     }
 }

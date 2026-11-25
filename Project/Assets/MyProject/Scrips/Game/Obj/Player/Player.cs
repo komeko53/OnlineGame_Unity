@@ -70,41 +70,43 @@ public class Player : NetworkBehaviour
         if (!Object.HasStateAuthority) return;
         if (IsDead) return;
 
-        if(!m_IsStop)
+        if (GameManager.Instance.IsAllReady())
         {
-            if (GameManager.Instance.IsAllReady())
-            {
-                // UIを削除
-                m_PlayerLabel.gameObject.SetActive(false);
+            // UIを削除
+            m_PlayerLabel.gameObject.SetActive(false);
 
+            if(!m_IsStop)
+            {
                 // 常にPlayerの前進方向へ進む
                 m_Move = this.transform.forward * m_Speed * Runner.DeltaTime;
                 m_Controller.Move(m_Move);
             }
+        }
 
-            // NetworkManagerのCharacterInputで設定された入力データを受け取る
-            // 入力情報はDataの中に格納される
-            if (GetInput(out NetworkManager.PlayerInputData data))
+        // NetworkManagerのCharacterInputで設定された入力データを受け取る
+        // 入力情報はDataの中に格納される
+        if (GetInput(out NetworkManager.PlayerInputData data))
+        {
+            m_Input.x = data.horizontal;
+            m_Input.z = data.vertical;
+
+            Debug.Log($"X:{m_Input.x}, Z:{m_Input.z}");
+
+            // ゲームスタート
+            if (data.isReady && !IsReady)
             {
-                m_Input.x = data.horizontal;
-                m_Input.z = data.vertical;
+                IsReady = true;
+            }
 
-                // ゲームスタート
-                if (data.isReady && !IsReady)
-                {
-                    IsReady = true;
-                }
+            // 弾発射
+            if (data.isfire &&
+                m_ShotTimer <= 0.0f)
+            {
+                Bullet bullet =
+                    BulletManager.Instance.Fire(this.transform.position, this.transform.rotation, Object.InputAuthority);
 
-                // 弾発射
-                if (data.isfire &&
-                    m_ShotTimer <= 0.0f)
-                {
-                    Bullet bullet =
-                        BulletManager.Instance.Fire(this.transform.position, this.transform.rotation, Object.InputAuthority);
-
-                    SoundManager.Instance.PlaySE("SE_Shot");
-                    m_ShotTimer = m_ShotInterval;
-                }
+                SoundManager.Instance.PlaySE("SE_Shot");
+                m_ShotTimer = m_ShotInterval;
             }
         }
 
@@ -113,13 +115,16 @@ public class Player : NetworkBehaviour
             m_ShotTimer -= Runner.DeltaTime;
         }
 
-        // 回転処理
-        UpdateRotation();
-
-        if(IsRotationComplete())
+        if(m_IsTurning)
         {
-            m_IsTurning = false;
-            m_IsStop = false;
+            // 回転処理
+            UpdateRotation();
+
+            if (IsRotationComplete())
+            {
+                m_IsTurning = false;
+                m_IsStop = false;
+            }
         }
     }
     public Vector3 GetInput()
